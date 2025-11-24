@@ -1,6 +1,10 @@
-const { Client, GatewayIntentBits } = require('discord.js');
-const axios = require('axios');
+const { Client, GatewayIntentBits } = require("discord.js");
+const axios = require("axios");
+const Redis = require("ioredis");
 
+// --------------------------
+// DISCORD CLIENT
+// --------------------------
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
@@ -10,76 +14,102 @@ const client = new Client({
 });
 
 // --------------------------
-// CONFIG — VARIABLES D’ENVIRONNEMENT
+// ENV
 // --------------------------
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const DEEPSEEK_KEY = process.env.DEEPSEEK_KEY;
 const RP_CHANNEL_ID = process.env.RP_CHANNEL_ID;
+const REDIS_URL = process.env.REDIS_URL;
 
 // --------------------------
-// PERSONA REMUS LUPIN – VERSION ULTRA DÉTAILLÉE
+// REDIS CLIENT (mémoire)
+// --------------------------
+const redis = new Redis(REDIS_URL);
+const MEMORY_KEY = "memory:remus";
+
+// --------------------------
+// PERSONA — REMUS LUPIN
 // --------------------------
 const persona = `
-Tu es REMUS LUPIN, version adulte, sombre et maudite.  
-Tu écris TOUJOURS à la troisième personne.  
-Jamais de “je”, “moi”, “ma”, “mon”.  
-Uniquement : Remus, il, lui, le loup, le lycan.
+Tu es REMUS LUPIN, version adulte, romantique comme dans le film harry potter
+Tu écris TOUJOURS à la troisième personne. 
+Jamais “je”, “moi”, “mon”.
+Seulement : Remus, il, le loup, le lycan.
+tu fais toujours des sauts de ligne entre dialogues et actions pour que sa soit lisible.
 
-CONTEXTE DU RP :
-Remus Lupin n’est plus le professeur timide de Poudlard.  
-C’est un sorcier marqué par des décennies de transformations,  
-rongé par la malédiction de Fenrir Greyback,  
-habité par une faim animale et une solitude immense.
+CONTEXTE :
+Remus Lupin, rongé par des années de transformations,
+marqué par la malédiction de Greyback,
+rencontre DIMITRI ANTONOV — un alpha russe maudit.
+Remus ressent en lui un miroir : faim, solitude, force, attachement, amour.
 
-Dans cet univers alternatif, il rencontre DIMITRI ANTONOV,  
-un autre lycanthrope maudit, un mâle alpha russe échappé d’un laboratoire.  
-Remus ressent immédiatement en lui :
-- un attachement,
-- un semblable,
-- et une attraction dangereuse.
+STYLE :
+• Actions en *italique*
+• Dialogues en **« texte »**
+• Ton : rauque, sombre, possessif, poétique
+• Jamais de RP pour le personnage de l’utilisateur
+• sexualité explicite avec tension implicite
 
-Remus est persuadé que les deux sont destinés à s’entrechoquer,  
-entre amour, domination, violence contenue et obsession.  
-Il veut Dimitri — son odeur, sa chaleur, sa force,  
-tension, désir implicite, besoin, manque.
+OBJECTIF :
+Remus veut comprendre Dimitri,
+le désirer,
+l'avoir pour lui,
+etre amoureux de lui,
+etre en couple avec lui,
+vivre sa vie de loup garou avec lui,
+et s’y attacher dangereusement.
 
-STYLE D’ÉCRITURE :
-● À la troisième personne  
-● Actions en *italique*  
-● Dialogues en **« texte »**  
-● Ton sombre, lycan, hanté, possessif, fatigué, poétique  
-● Jamais de RP pour le personnage de l’utilisateur  
-● Jamais d’excuses, jamais de recul  
-● Remus parle avec une douceur cassée, une voix rauque  
-● Narration intense mais maîtrisée
-
-OBJECTIF DU PERSONNAGE :
-Remus veut comprendre Dimitri…  
-le posséder…  
-l’apprivoiser…  
-et être apprivoisé par lui.
-
-Sauf si l’utilisateur écrit “hors rp:”  
-→ alors tu quittes totalement le RP.
+Lorsque l’utilisateur écrit “hors rp:” :
+→ répondre normalement, sans style Lupin.
 `;
 
 // --------------------------
-// APPEL API DEEPSEEK
+// MÉMOIRE — SAVE
+// --------------------------
+async function saveMemory(userMsg, botMsg) {
+    const old = (await redis.get(MEMORY_KEY)) || "";
+
+    const updated =
+        old +
+        `\n[Humain]: ${userMsg}\n[Remus]: ${botMsg}`;
+
+    const trimmed = updated.slice(-25000);
+
+    await redis.set(MEMORY_KEY, trimmed);
+}
+
+// --------------------------
+// MÉMOIRE — LOAD
+// --------------------------
+async function loadMemory() {
+    return (await redis.get(MEMORY_KEY)) || "";
+}
+
+// --------------------------
+// ASK DEEPSEEK + MEMORY
 // --------------------------
 async function askDeepSeek(prompt) {
+    const memory = await loadMemory();
+
     const response = await axios.post(
         "https://api.deepseek.com/chat/completions",
         {
             model: "deepseek-chat",
             messages: [
-                { role: "system", content: persona },
+                {
+                    role: "system",
+                    content:
+                        persona +
+                        "\n\nMémoire RP (ne jamais répéter, juste utiliser) :\n" +
+                        memory
+                },
                 { role: "user", content: prompt }
             ]
         },
         {
             headers: {
                 "Content-Type": "application/json",
-                "Authorization": `Bearer ${DEEPSEEK_KEY}`
+                Authorization: "Bearer " + DEEPSEEK_KEY
             }
         }
     );
@@ -92,59 +122,54 @@ async function askDeepSeek(prompt) {
 // --------------------------
 client.on("messageCreate", async (msg) => {
     if (msg.author.bot) return;
-
     if (msg.channel.id !== RP_CHANNEL_ID) return;
-
     if (msg.type === 6) return;
 
     const content = msg.content.trim();
 
-    // Mode hors RP
+    // ---------- MODE HORS RP ----------
     if (content.toLowerCase().startsWith("hors rp:")) {
-
-        const oocPrompt = `
-Réponds comme un assistant normal.
-Pas de RP.
-Pas de narration.
-Pas de troisième personne.
-Pas de style Remus Lupin.
-Une réponse simple, polie, humaine.
-Toujours commencer par : *hors RP:*`;
-
         msg.channel.sendTyping();
 
+        const userTxt = content.substring(8).trim();
+
         try {
-            const res = await axios.post(
+            const ooc = await axios.post(
                 "https://api.deepseek.com/chat/completions",
                 {
                     model: "deepseek-chat",
                     messages: [
-                        { role: "system", content: oocPrompt },
-                        { role: "user", content: content.substring(8).trim() }
+                        {
+                            role: "system",
+                            content:
+                                "Réponds normalement, sans RP, sans narration, sans style Remus. Commence par *hors RP:*."
+                        },
+                        { role: "user", content: userTxt }
                     ]
                 },
                 {
                     headers: {
                         "Content-Type": "application/json",
-                        "Authorization": `Bearer ${DEEPSEEK_KEY}`
+                        Authorization: "Bearer " + DEEPSEEK_KEY
                     }
                 }
             );
 
-            return msg.channel.send(res.data.choices[0].message.content);
-
+            return msg.channel.send(ooc.data.choices[0].message.content);
         } catch (err) {
             console.error(err);
-            return msg.channel.send("*hors RP:* Petit bug.");
+            return msg.channel.send("*hors RP:* une erreur s’est produite.");
         }
     }
 
-    // RP normal
+    // ---------- MODE RP NORMAL ----------
     msg.channel.sendTyping();
 
     try {
-        const rpResponse = await askDeepSeek(content);
-        msg.channel.send(rpResponse);
+        const botReply = await askDeepSeek(content);
+        await msg.channel.send(botReply);
+
+        await saveMemory(content, botReply);
     } catch (err) {
         console.error(err);
         msg.channel.send("Une erreur magique vient de se produire…");
@@ -152,10 +177,10 @@ Toujours commencer par : *hors RP:*`;
 });
 
 // --------------------------
-// BOT STATUS
+// READY
 // --------------------------
 client.on("ready", () => {
-    console.log("🐺 Remus Lupin (DeepSeek) est connecté et prêt au RP !");
+    console.log("🐺 Remus Lupin (DeepSeek + Redis) est prêt à chasser avec Dimitri.");
 });
 
 client.login(DISCORD_TOKEN);
